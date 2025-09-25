@@ -1,0 +1,173 @@
+local Players = game:GetService("Players")
+local Http = game:GetService("HttpService")
+local TPS = game:GetService("TeleportService")
+local player = Players.LocalPlayer
+
+local WebhookUrl = "https://discord.com/api/webhooks/1420695308135960629/sPxwZCKqDXMOL6zwvybi1oB3Qp6_VRbD-S7dpUiZgJsCHDiQx6dc0yN_t8Q1dncsraN7"
+
+local Api = "https://games.roblox.com/v1/games/"
+local placeId = game.PlaceId
+local serversUrl = Api .. placeId .. "/servers/Public?sortOrder=Asc&limit=10"
+
+local ItemList = {
+    "Magma Fruit", "Flare Fruit", "Dark Fruit", "Rumble Fruit", "Quake Fruit",
+    "Sand Fruit", "Gas Fruit", "Phoenix Fruit", "Chilly Fruit", "Rare Box",
+    "Plasma Fruit", "Venom Fruit", "Candy Fruit", "Ultra Rare Box", "Luck Fruit"
+}
+
+local Notified = {}
+
+local function getRequester()
+    if typeof(syn) == "table" and syn.request then return syn.request end
+    if request then return request end
+    if http_request then return http_request end
+    return nil
+end
+
+local function getColor(itemName)
+    if itemName:find("Box") then
+        return 16766720
+    elseif itemName == "Luck Fruit" then
+        return 65280
+    else
+        return 3447003
+    end
+end
+
+-- ดึง Stat จริงจากเกม
+local function getPlayerStats(plr)
+    local stats = {}
+    local leaderstats = plr:FindFirstChild("leaderstats")
+    if leaderstats then
+        for _, stat in ipairs(leaderstats:GetChildren()) do
+            stats[stat.Name] = stat.Value
+        end
+    end
+    return stats
+end
+
+-- แปลง Stats ให้เป็นข้อความ
+local function statsToString(statsTable)
+    local parts = {}
+    for k, v in pairs(statsTable) do
+        table.insert(parts, k .. " " .. tostring(v))
+    end
+    return table.concat(parts, ", ")
+end
+
+-- เพิ่มชื่อ Holder และ Stats เข้าไปใน Embed
+local function makeEmbed(itemName, holderName, location, serverPlayers, jobId, placeId, stats)
+    return {{
+        title = "พบไอเท็ม/กล่องในเซิร์ฟเวอร์",
+        color = getColor(itemName),
+        fields = {
+            { name = "Item", value = tostring(itemName), inline = true },
+            { name = "Holder", value = tostring(holderName or "World"), inline = true },
+            { name = "Stats", value = stats or "ไม่มีข้อมูล", inline = false },
+            { name = "อยู่ที่", value = tostring(location), inline = true },
+            { name = "Server Players", value = tostring(serverPlayers or "N/A"), inline = true },
+            { name = "Server JobId", value = tostring(jobId or "N/A"), inline = false },
+            { name = "PlaceId", value = tostring(placeId or "N/A"), inline = false },
+            { name = "Teleport to this server", value = "```lua\ngame:GetService(\"TeleportService\"):TeleportToPlaceInstance(".. tostring(placeId) ..", \"".. tostring(jobId) .."\")\n```", inline = false },
+        },
+        footer = { text = "แจ้งเมื่อ: " .. os.date("%Y-%m-%d %H:%M:%S") }
+    }}
+end
+
+local function sendWebhookEmbed(itemName, holderName, location, stats)
+    local jobId = tostring(game.JobId or "")
+    local serverPlayers = tostring(#Players:GetPlayers()) .. "/" .. tostring(Players.MaxPlayers or "N/A")
+    local key = tostring(itemName) .. "|" .. tostring(holderName or "World") .. "|" .. jobId
+    if Notified[key] then return end
+
+    local payload = { embeds = makeEmbed(itemName, holderName, location, serverPlayers, jobId, placeId, stats) }
+    local body = Http:JSONEncode(payload)
+
+    local requester = getRequester()
+    if requester then
+        pcall(function()
+            requester({
+                Url = WebhookUrl,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body
+            })
+        end)
+    else
+        pcall(function()
+            game:GetService("HttpService"):PostAsync(WebhookUrl, body, Enum.HttpContentType.ApplicationJson)
+        end)
+    end
+
+    Notified[key] = true
+end
+
+local function ListServers()
+    local success, raw = pcall(function()
+        return game:HttpGet(serversUrl)
+    end)
+    if not success or not raw then return nil end
+    local ok, decoded = pcall(function() return Http:JSONDecode(raw) end)
+    if ok then return decoded end
+    return nil
+end
+
+local function getAllItems()
+    local foundItems = {}
+
+    for _, searchName in ipairs(ItemList) do
+        local item = workspace:FindFirstChild(searchName, true)
+        if item then
+            table.insert(foundItems, { name = searchName, holder = "World", location = "Workspace" })
+            pcall(function() sendWebhookEmbed(searchName, "World", "Workspace", "ไม่มี Stats") end)
+        end
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local backpack = plr:FindFirstChild("Backpack")
+        local statsString = statsToString(getPlayerStats(plr))
+        if backpack then
+            for _, searchName in ipairs(ItemList) do
+                if backpack:FindFirstChild(searchName) then
+                    table.insert(foundItems, { name = searchName, holder = plr.Name, location = "Backpack" })
+                    pcall(function() sendWebhookEmbed(searchName, plr.Name, "Backpack", statsString) end)
+                end
+            end
+        end
+        local char = plr.Character
+        if char then
+            for _, searchName in ipairs(ItemList) do
+                if char:FindFirstChild(searchName) then
+                    table.insert(foundItems, { name = searchName, holder = plr.Name, location = "Character" })
+                    pcall(function() sendWebhookEmbed(searchName, plr.Name, "Character", statsString) end)
+                end
+            end
+        end
+    end
+
+    return foundItems
+end
+
+local visited = {}
+local function HopServer()
+    local servers = ListServers()
+    if servers and servers.data and #servers.data > 0 then
+        for _, server in ipairs(servers.data) do
+            if server.id ~= game.JobId and not visited[server.id] then
+                visited[server.id] = true
+                print("[HOP] → ไป Server ใหม่: " .. server.id)
+                TPS:TeleportToPlaceInstance(placeId, server.id, player)
+                return
+            end
+        end
+    end
+    print("[HOP] ไม่มี Server ใหม่ → อาจกลับเซิร์ฟเดิม")
+    TPS:TeleportToPlaceInstance(placeId, servers.data[1].id, player)
+end
+
+task.spawn(function()
+    while task.wait(2) do
+        getAllItems()
+        HopServer()
+    end
+end)
